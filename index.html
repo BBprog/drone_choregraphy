@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<title>Choregraphie de drones</title>
+
+		<link rel="stylesheet" href="style_slider.css">
+
+    	<!-- Three.js -->
+		<script src="three/build/three.js"></script>
+		<!-- loader.js -->
+		<script src="loader.js"></script>
+		<!-- app.js -->
+		<!-- <script src="app.js" type="module"></script> -->
+
+		<!-- Latest compiled and minified CSS -->
+		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css">
+		<!-- jQuery library -->
+		<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+		<!-- Latest compiled JavaScript -->
+		<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"></script>
+
+		<style>
+			#tools {
+				padding-top: 10px;
+				padding-left: 20px;
+			}
+		</style>
+
+	</head>
+
+	<body>
+	  	<div class="row">
+		  	<div class="col-sm-2" id="tools">
+				<button id="play">Play</button>
+				<div class="slidecontainer">
+				  	<input type="range" min="0" max="480" value="50" class="slider" id="animRange">
+				</div>
+				<div id="animRangeValue"></div>
+				<label>Show trajectories <input id="trajectory" type="checkbox" checked /></label>
+				<label>Show waypoints <input id="waypoints" type="checkbox" checked /></label>
+			</div>
+	    	<div class="col-sm-10" id="renderer"></div>
+	    </div>
+
+		<script type="module">
+
+			// imports
+
+			import * as THREE from './three/build/three.module.js';
+			import { GUI } from './three/examples/jsm/libs/dat.gui.module.js';
+			import { MapControls } from './three/examples/jsm/controls/OrbitControls.js';
+			import { TransformControls } from "./three/examples/jsm/controls/TransformControls.js";
+			import { STLLoader } from './three/examples/jsm/loaders/STLLoader.js';
+			import { Drone } from './drone.js';
+
+			// variables
+
+			var playBtn = document.getElementById("play");
+			var trajectory = document.getElementById("trajectory");
+			var waypoints = document.getElementById("waypoints");
+			var slider = document.getElementById("animRange");
+			var output = document.getElementById("animRangeValue");
+			output.innerHTML = slider.value;
+
+			let controls,
+			    camera,
+			    scene,
+			    renderer,
+			    mouse;
+
+			var json_object;
+
+			const clock = new THREE.Clock();
+			var timer = 0;
+			var ellapsedTime = 0;
+
+			const drones = [];
+			var framerate;
+			var startFrame = 0;
+
+			updateSlider( startFrame );
+
+			var ANIMATE = false;
+
+			const envTexture = new THREE.CubeTextureLoader().load(["./three/examples/textures/uv_grid_opengl.jpg",
+	                                                               "./three/examples/textures/uv_grid_opengl.jpg",
+	                                                               "./three/examples/textures/uv_grid_opengl.jpg",
+	                                                               "./three/examples/textures/uv_grid_opengl.jpg",
+	                                                               "./three/examples/textures/uv_grid_opengl.jpg",
+	                                                               "./three/examples/textures/uv_grid_opengl.jpg"]);
+	        envTexture.mapping = THREE.CubeReflectionMapping;
+
+	        const material = new THREE.MeshPhysicalMaterial({
+	            color: 0xb2ffc8,
+	            envMap: envTexture,
+	            metalness: .25,
+	            roughness: 0.1,
+	            transparent: false,
+	            transmission: 1.0,
+	            side: THREE.DoubleSide,
+	            clearcoat: 1.0,
+	            clearcoatRoughness: .25
+	        });
+
+			// import JSON
+
+			var loader = new Promise( function( resolve, reject ) {
+
+			    loadJSON( 'waypoints.json', function ( result ) {
+
+			        json_object = JSON.parse( result );
+
+			        resolve();
+
+			    });
+
+			});
+			loader.then( () => {
+
+			    framerate = json_object.framerate;
+
+			    for (let i in json_object.drones) {
+
+			        drones.push( new Drone( json_object.drones[i].id, json_object.drones[i].waypoints ) );
+
+			    }
+
+				let promises = [];
+
+				for ( let i in drones ) {
+
+					promises.push( loadModel( './models/X-BlackDrone-Drone-1.stl', i ) );
+
+				}
+
+				Promise.all( promises ).then(() => {
+
+					init();
+
+				    animate();
+
+				});
+
+			});
+
+			function loadModel(url, i) {
+
+				return new Promise(resolve => {
+
+					new STLLoader().load(
+
+			            url,
+
+			            function (geometry) {
+
+			                drones[ i ].loadMesh( new THREE.Mesh(geometry, material) );
+
+							resolve();
+
+			            },
+
+			            (xhr) => {
+
+			                console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+
+			            },
+
+			            (error) => {
+
+			                console.log(error);
+
+			            }
+			        );
+
+				});
+
+			}
+
+			// threeJS functions
+
+			function init() {
+
+			    camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 1, 10000 );
+			    camera.position.set( 3000, 3000, 3000 );
+
+			    renderer = new THREE.WebGLRenderer( { antialias: true } );
+			    renderer.setPixelRatio( window.devicePixelRatio );
+			    $( "#renderer" ).append( renderer.domElement );
+			    resizeCanvas();
+
+			    scene = new THREE.Scene();
+			    scene.background = new THREE.Color( 0xcccccc );
+
+			    controls = new MapControls( camera, renderer.domElement );
+
+			    controls.enableDamping = true;
+			    controls.dampingFactor = 0.05;
+
+			    controls.screenSpacePanning = false;
+
+			    controls.minDistance = 0;
+			    controls.maxDistance = 2000;
+
+			    controls.maxPolarAngle = Math.PI / 2;
+
+			    for ( let i in drones ) {
+
+			        for ( let h in drones[ i ].curveHandles) {
+			            scene.add( drones[ i ].curveHandles[ h ] );
+			        }
+
+			        scene.add( drones[ i ].line );
+
+			        scene.add( drones[ i ].mesh );
+
+			    }
+
+			    // lights
+
+			    const dirLight1 = new THREE.DirectionalLight( 0xffffff );
+			    dirLight1.position.set( 1, 1, 1 );
+			    scene.add( dirLight1 );
+
+			    const dirLight2 = new THREE.DirectionalLight( 0x002288 );
+			    dirLight2.position.set( - 1, - 1, - 1 );
+			    scene.add( dirLight2 );
+
+			    const ambientLight = new THREE.AmbientLight( 0x222222 );
+			    scene.add( ambientLight );
+
+			    //
+
+			    window.addEventListener( 'resize', onWindowResize, false );
+
+			    const gui = new GUI();
+			    gui.add( controls, 'screenSpacePanning' );
+
+			}
+
+			function resizeCanvas(){
+			    var con = $( "#renderer" ),
+			        aspect = window.innerHeight / window.innerWidth,
+			        width = con.width(),
+			        height = con.height();
+
+			    renderer.setSize( width, Math.round( width * aspect ) );
+			}
+
+			function onWindowResize() {
+
+			    camera.aspect = window.innerWidth / window.innerHeight;
+			    camera.updateProjectionMatrix();
+
+			    resizeCanvas();
+
+			}
+
+			function animate() {
+
+			    requestAnimationFrame( animate );
+
+			    controls.update();
+
+			    if ( ANIMATE ) {
+
+			        timer += clock.getDelta();
+
+					let newFrame = Math.trunc( timer * framerate ) + startFrame;
+
+					updateSlider( newFrame );
+
+			        for ( let i in drones ) {
+
+			            drones[ i ].setPositionByFrame( newFrame );
+
+			        }
+
+			    }
+
+			    render();
+
+			}
+
+			function render() {
+
+			    renderer.render( scene, camera );
+
+			}
+
+			// Tools functions
+
+			function updateSlider( frame ) {
+
+				if ( frame > slider.max ) frame = slider.max;
+
+				slider.value = frame;
+				output.innerHTML = frame;
+
+			}
+
+			slider.oninput = function() {
+
+				ANIMATE = false;
+				clock.stop();
+				timer = 0;
+				playBtn.innerHTML = "Play";
+
+				output.innerHTML = this.value;
+				startFrame = parseInt( this.value, 10 );
+
+				for ( let i in drones ) {
+					drones[ i ].setPositionByFrame ( startFrame );
+				}
+
+			}
+
+			playBtn.onclick = function() {
+
+			    if ( ANIMATE ) {
+			        clock.stop();
+					playBtn.innerHTML = "Play";
+			    }
+			    else {
+			        clock.start();
+					playBtn.innerHTML = "Pause";
+			    }
+			    ANIMATE = !ANIMATE;
+
+			}
+
+			function showHideTrajectories( visible ) {
+
+				for ( let i in drones ) {
+
+					drones[ i ].line.visible = visible;
+
+				}
+
+			}
+
+			function showHideWaypoints( visible ) {
+
+				for ( let i in drones ) {
+
+					for ( let h in drones[ i ].curveHandles) {
+
+			            drones[ i ].curveHandles[ h ].visible = visible;
+
+			        }
+
+				}
+
+			}
+
+			trajectory.onchange = function() {
+
+				if (trajectory.checked) {
+
+					showHideTrajectories( true );
+
+				}
+				else {
+
+					showHideTrajectories( false );
+
+				}
+
+			}
+
+			waypoints.onchange = function() {
+
+				if (waypoints.checked) {
+
+					showHideWaypoints( true );
+
+				}
+				else {
+
+					showHideWaypoints( false );
+
+				}
+
+			}
+
+		</script>
+	</body>
+
+</html>

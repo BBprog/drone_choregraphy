@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<title>Choregraphie de drones</title>
+
+    	<!-- Three.js -->
+		<script src="three/build/three.js"></script>
+		<!-- loader.js -->
+		<script src="loader.js"></script>
+		<!-- drone.js -->
+		<script src="drone.js"></script>
+	</head>
+
+	<body>
+		<script type="module">
+
+			// imports
+
+			import * as THREE from './three/build/three.module.js';
+			import { GUI } from './three/examples/jsm/libs/dat.gui.module.js';
+			import { MapControls } from './three/examples/jsm/controls/OrbitControls.js';
+			import { TransformControls } from "./three/examples/jsm/controls/TransformControls.js";
+			import Stats from "./three/examples/jsm/libs/stats.module.js";
+			import { InstancedFlow } from "./three/examples/jsm/modifiers/CurveModifier.js";
+
+			// class Drone
+
+			class Drone {
+
+				calcDistToWp() {
+					let to = this.waypoints[ this.currentWp + 1 ];
+
+					this.step = { "x" : (to.position.lng_X - this.position.lng_X),
+								  "y" : (to.position.alt_Y - this.position.alt_Y),
+							  	  "z" : (to.position.lat_Z - this.position.lat_Z)};
+				}
+
+				constructor( id, waypoints ) {
+					this.id = id;
+					this.waypoints = waypoints;
+					this.currentWp = 0;
+					this.position = waypoints[0].position;
+
+					var pts = [];
+
+					for (let i in waypoints) {
+						let pos = waypoints[i].position;
+						const point = { x:pos.lng_X, y:pos.alt_Y, z:pos.lat_Z };
+						pts.push( point );
+					}
+
+					const boxGeometry = new THREE.BoxGeometry( 2, 2, 2 );
+					const boxMaterial = new THREE.MeshBasicMaterial( 0x99ff99 );
+
+					this.curveHandles = [];
+
+					for ( let i in pts ) {
+						const handle = new THREE.Mesh( boxGeometry, boxMaterial );
+						handle.position.copy( pts[i] );
+						this.curveHandles.push( handle );
+					}
+
+					this.curve = new THREE.CatmullRomCurve3(
+						this.curveHandles.map( ( handle ) => handle.position )
+					);
+					this.curve.curveType = "centripetal";
+					this.curve.closed = false;
+
+					const points = this.curve.getPoints( 50 );
+					const line = new THREE.LineLoop(
+						new THREE.BufferGeometry().setFromPoints( points ),
+						new THREE.LineBasicMaterial( { color: 0x00ff00 } )
+					);
+
+					this.line = line;
+
+					const geometry = new THREE.BoxBufferGeometry( 10, 10, 10 );
+					const material = new THREE.MeshBasicMaterial( { color: 0xffffff, flatShading: true } );
+
+					const mesh = new THREE.Mesh( geometry, material );
+
+					mesh.position.x = this.position.lng_X;
+					mesh.position.y = this.position.alt_Y;
+					mesh.position.z = this.position.lat_Z;
+
+					mesh.scale.x = mesh.scale.y = mesh.scale.z = 50;
+
+					this.mesh = mesh;
+				}
+
+				getWayPoint( id ) {
+					return this.waypoints[id];
+				}
+
+				getWayPoints() {
+					var points = [];
+
+					for (let i in this.waypoints) {
+						let pos = this.waypoints[i].position;
+						const point = { x:pos.lng_X, y:pos.alt_Y, z:pos.lat_Z };
+						points.push( point );
+					}
+
+					return points;
+				}
+
+				animate( dt ) {
+
+					if ( this.currentWp >= this.waypoints.length - 1 ) return;
+
+					let ellapsed = this.waypoints[ this.currentWp + 1 ].frame - dt;
+
+					while ( ellapsed <= 0 ) {
+
+						this.currentWp++;
+
+						ellapsed = this.waypoints[ this.currentWp + 1 ].frame - dt;
+
+					}
+
+					this.calcDistToWp();
+
+					this.position.lng_X += this.step.x / ellapsed;
+					this.position.alt_Y += this.step.y / ellapsed;
+					this.position.lat_Z += this.step.z / ellapsed;
+
+					this.mesh.position.set( this.position.lng_X,
+									   		this.position.alt_Y,
+									   		this.position.lat_Z );
+				}
+
+			}
+
+			// variables
+
+			let controls,
+				camera,
+				scene,
+				renderer,
+				flow;
+
+			var json_object;
+
+			const clock = new THREE.Clock();
+			var timer = 0;
+
+			const drones = [];
+			var framerate;
+
+			// import JSON
+
+			var loader = new Promise( function( resolve, reject ) {
+
+				loadJSON( 'waypoints.json', function ( result ) {
+
+					json_object = JSON.parse( result );
+
+					resolve();
+
+				});
+
+			});
+			loader.then( () => {
+
+				framerate = json_object.framerate;
+
+				for (let i in json_object.drones) {
+
+					drones.push( new Drone( json_object.drones[i].id, json_object.drones[i].waypoints ));
+
+				}
+
+			    init();
+
+				animate();
+
+			});
+
+			// threeJS functions
+
+			function init() {
+
+				camera = new THREE.PerspectiveCamera( 60, window.innerWidth / window.innerHeight, 1, 10000 );
+				camera.position.set( 3000, 3000, 3000 );
+
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				document.body.appendChild( renderer.domElement );
+
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color( 0xcccccc );
+
+				controls = new MapControls( camera, renderer.domElement );
+
+				controls.enableDamping = true;
+				controls.dampingFactor = 0.05;
+
+				controls.screenSpacePanning = false;
+
+				controls.minDistance = 0;
+				controls.maxDistance = 2000;
+
+				controls.maxPolarAngle = Math.PI / 2;
+
+				for ( let i in drones ) {
+
+					for ( let h in drones[ i ].curveHandles) {
+						scene.add( drones[ i ].curveHandles[ h ] );
+					}
+
+					scene.add( drones[ i ].line );
+
+				}
+
+				var curves = [];
+				for ( let i in drones ) {
+					curves.push( drones[ i ].curve );
+				}
+
+				const geometry = new THREE.BoxBufferGeometry( 10, 10, 10 );
+				const material = new THREE.MeshStandardMaterial( { color: 0xffffff } );
+
+				const numberOfInstances = drones.length;
+				flow = new InstancedFlow( numberOfInstances, curves.length, geometry, material );
+
+				for ( let i in curves ) {
+
+					flow.updateCurve( i, curves[i] );
+					scene.add( flow.object3D );
+
+				}
+
+				for ( let i = 0; i < numberOfInstances; i ++ ) {
+
+					const curveIndex = i % curves.length;
+					flow.setCurve( i, curveIndex );
+					flow.moveIndividualAlongCurve( i, i * 1 / numberOfInstances );
+
+				}
+
+				// lights
+
+				const dirLight1 = new THREE.DirectionalLight( 0xffffff );
+				dirLight1.position.set( 1, 1, 1 );
+				scene.add( dirLight1 );
+
+				const dirLight2 = new THREE.DirectionalLight( 0x002288 );
+				dirLight2.position.set( - 1, - 1, - 1 );
+				scene.add( dirLight2 );
+
+				const ambientLight = new THREE.AmbientLight( 0x222222 );
+				scene.add( ambientLight );
+
+				//
+
+				window.addEventListener( 'resize', onWindowResize, false );
+
+				const gui = new GUI();
+				gui.add( controls, 'screenSpacePanning' );
+
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+
+				controls.update();
+
+				if ( flow ) {
+
+					flow.moveAlongCurve( 0.001 );
+
+				}
+
+				render();
+
+			}
+
+			function render() {
+
+				timer += clock.getDelta();
+
+				// for ( let i in drones ) {
+				//
+				// 	drones[ i ].animate( timer * framerate );
+				//
+				// }
+
+				renderer.render( scene, camera );
+
+			}
+
+		</script>
+
+
+	</body>
+
+</html>
